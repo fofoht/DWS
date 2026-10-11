@@ -14,6 +14,7 @@ class Producto extends Model
         'categoria_id',
         'nombre',
         'descripcion',
+        'costo',
         'precio',
         'stock',
         'stock_minimo',
@@ -21,6 +22,7 @@ class Producto extends Model
     ];
 
     protected $casts = [
+        'costo' => 'decimal:2',
         'precio' => 'decimal:2',
         'estado' => 'boolean',
     ];

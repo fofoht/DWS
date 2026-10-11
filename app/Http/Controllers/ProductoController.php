@@ -4,17 +4,59 @@ namespace App\Http\Controllers;
 
 use App\Models\Categoria;
 use App\Models\Producto;
+use App\Services\AuditoriaService;
 use Illuminate\Http\Request;
-
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 
 class ProductoController extends Controller
 {
     /**
-     * Display a listing of the resource.
+     * Obtener los productos de la empresa autenticada.
+     */
+    private function productosEmpresa()
+    {
+        return Producto::where(
+            'empresa_id',
+            auth()->user()->empresa_id
+        );
+    }
+
+    /**
+     * Obtener las categorías de la empresa autenticada.
+     */
+    private function categoriasEmpresa()
+    {
+        return Categoria::where(
+            'empresa_id',
+            auth()->user()->empresa_id
+        );
+    }
+
+    /**
+     * Seleccionar los datos relevantes para la auditoría.
+     */
+    private function datosAuditoria(Producto $producto): array
+    {
+        return $producto->only([
+            'categoria_id',
+            'nombre',
+            'descripcion',
+            'costo',
+            'precio',
+            'stock',
+            'stock_minimo',
+            'estado',
+        ]);
+    }
+
+    /**
+     * Mostrar los productos.
      */
     public function index()
     {
-          $productos = Producto::with('categoria')
+        $productos = $this->productosEmpresa()
+            ->with('categoria')
             ->orderBy('nombre')
             ->get();
 
@@ -22,32 +64,52 @@ class ProductoController extends Controller
     }
 
     /**
-     * Show the form for creating a new resource.
+     * Mostrar el formulario de creación.
      */
     public function create()
     {
-          $categorias = Categoria::orderBy('nombre')->get();
+        $categorias = $this->categoriasEmpresa()
+            ->orderBy('nombre')
+            ->get();
 
         return view('productos.create', compact('categorias'));
     }
 
     /**
-     * Store a newly created resource in storage.
+     * Registrar un producto y su auditoría.
      */
     public function store(Request $request)
     {
-         $datos = $request->validate([
-            'categoria_id' => 'required|exists:categorias,id',
+        $empresaId = auth()->user()->empresa_id;
+
+        $datos = $request->validate([
+            'categoria_id' => [
+                'required',
+                Rule::exists('categorias', 'id')
+                    ->where('empresa_id', $empresaId),
+            ],
             'nombre' => 'required|string|max:100',
             'descripcion' => 'nullable|string|max:255',
+            'costo' => 'required|numeric|min:0',
             'precio' => 'required|numeric|min:0',
             'stock' => 'required|integer|min:0',
             'stock_minimo' => 'required|integer|min:0',
         ]);
 
+        $datos['empresa_id'] = $empresaId;
         $datos['estado'] = $request->boolean('estado');
 
-        Producto::create($datos);
+        DB::transaction(function () use ($datos) {
+            $producto = Producto::create($datos);
+
+            app(AuditoriaService::class)->registrar(
+                'CREAR',
+                $producto,
+                null,
+                $this->datosAuditoria($producto),
+                'Se registró un producto.'
+            );
+        });
 
         return redirect()
             ->route('productos.index')
@@ -55,34 +117,52 @@ class ProductoController extends Controller
     }
 
     /**
-     * Display the specified resource.
+     * Mostrar un producto.
      */
-    public function show(Producto $producto)
+    public function show(string $id)
     {
-        $producto->load('categoria');
+        $producto = $this->productosEmpresa()
+            ->with('categoria')
+            ->findOrFail($id);
 
         return view('productos.show', compact('producto'));
     }
 
     /**
-     * Show the form for editing the specified resource.
+     * Mostrar el formulario de edición.
      */
-    public function edit(Producto $producto)
+    public function edit(string $id)
     {
-        $categorias = Categoria::orderBy('nombre')->get();
+        $producto = $this->productosEmpresa()->findOrFail($id);
 
-        return view('productos.edit', compact('producto', 'categorias'));
+        $categorias = $this->categoriasEmpresa()
+            ->orderBy('nombre')
+            ->get();
+
+        return view(
+            'productos.edit',
+            compact('producto', 'categorias')
+        );
     }
 
     /**
-     * Update the specified resource in storage.
+     * Actualizar un producto y registrar los cambios.
      */
-    public function update(Request $request, Producto $producto)
+    public function update(Request $request, string $id)
     {
+        $empresaId = auth()->user()->empresa_id;
+
+        $producto = $this->productosEmpresa()->findOrFail($id);
+
         $datos = $request->validate([
-            'categoria_id' => 'required|exists:categorias,id',
+            'categoria_id' => [
+                'required',
+                Rule::exists('categorias', 'id')
+                    ->where('empresa_id', $empresaId),
+            ],
             'nombre' => 'required|string|max:100',
             'descripcion' => 'nullable|string|max:255',
+            'costo' => 'required|numeric|min:0',
             'precio' => 'required|numeric|min:0',
             'stock' => 'required|integer|min:0',
             'stock_minimo' => 'required|integer|min:0',
@@ -90,7 +170,21 @@ class ProductoController extends Controller
 
         $datos['estado'] = $request->boolean('estado');
 
-        $producto->update($datos);
+        DB::transaction(function () use ($producto, $datos) {
+            $datosAnteriores = $this->datosAuditoria($producto);
+
+            $producto->update($datos);
+
+            $producto->refresh();
+
+            app(AuditoriaService::class)->registrar(
+                'ACTUALIZAR',
+                $producto,
+                $datosAnteriores,
+                $this->datosAuditoria($producto),
+                'Se actualizaron los datos de un producto.'
+            );
+        });
 
         return redirect()
             ->route('productos.index')
@@ -98,34 +192,28 @@ class ProductoController extends Controller
     }
 
     /**
-     * Remove the specified resource from storage.
+     * Eliminar un producto y registrar sus datos anteriores.
      */
-    public function destroy(Producto $producto)
+    public function destroy(string $id)
     {
-       // Eliminar el producto metodo basico sin relaciones con compras y ventas
-      $producto->delete();
+        $producto = $this->productosEmpresa()->findOrFail($id);
 
-    return redirect()
-        ->route('productos.index')
-        ->with('success', 'Producto eliminado correctamente.');
-    
-        // metodo paa cuando tenga relaciones con compras y ventas creados
-        
-    /**if ($producto->detalleCompras()->exists() ||
-            $producto->detalleVentas()->exists()) {
-            return redirect()
-                ->route('productos.index')
-                ->with(
-                    'error',
-                    'No se puede eliminar un producto con compras o ventas registradas.'
-                );
-        }
+        DB::transaction(function () use ($producto) {
+            $datosAnteriores = $this->datosAuditoria($producto);
 
-        $producto->delete();
+            $producto->delete();
+
+            app(AuditoriaService::class)->registrar(
+                'ELIMINAR',
+                $producto,
+                $datosAnteriores,
+                null,
+                'Se eliminó un producto.'
+            );
+        });
 
         return redirect()
             ->route('productos.index')
             ->with('success', 'Producto eliminado correctamente.');
-    */
     }
 }

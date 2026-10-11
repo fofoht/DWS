@@ -3,22 +3,48 @@
 namespace App\Http\Controllers;
 
 use App\Models\Categoria;
+use App\Services\AuditoriaService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class CategoriaController extends Controller
 {
     /**
-     * Display a listing of the resource.
+     * Obtener las categorías de la empresa autenticada.
+     */
+    private function categoriasEmpresa()
+    {
+        return Categoria::where(
+            'empresa_id',
+            auth()->user()->empresa_id
+        );
+    }
+
+    /**
+     * Seleccionar los datos relevantes para la auditoría.
+     */
+    private function datosAuditoria(Categoria $categoria): array
+    {
+        return $categoria->only([
+            'nombre',
+            'descripcion',
+        ]);
+    }
+
+    /**
+     * Mostrar las categorías.
      */
     public function index()
     {
-         $categorias = Categoria::orderBy('nombre')->get();
+        $categorias = $this->categoriasEmpresa()
+            ->orderBy('nombre')
+            ->get();
 
         return view('categorias.index', compact('categorias'));
     }
 
     /**
-     * Show the form for creating a new resource.
+     * Mostrar el formulario de creación.
      */
     public function create()
     {
@@ -26,16 +52,28 @@ class CategoriaController extends Controller
     }
 
     /**
-     * Store a newly created resource in storage.
+     * Guardar una categoría y registrar la auditoría.
      */
     public function store(Request $request)
     {
-         $datos = $request->validate([
+        $datos = $request->validate([
             'nombre' => 'required|string|max:100',
             'descripcion' => 'nullable|string|max:255',
         ]);
 
-        Categoria::create($datos);
+        $datos['empresa_id'] = auth()->user()->empresa_id;
+
+        DB::transaction(function () use ($datos) {
+            $categoria = Categoria::create($datos);
+
+            app(AuditoriaService::class)->registrar(
+                'CREAR',
+                $categoria,
+                null,
+                $this->datosAuditoria($categoria),
+                'Se creó una categoría.'
+            );
+        });
 
         return redirect()
             ->route('categorias.index')
@@ -43,32 +81,51 @@ class CategoriaController extends Controller
     }
 
     /**
-     * Display the specified resource.
+     * Mostrar una categoría.
      */
-    public function show(Categoria $categoria)
+    public function show(string $id)
     {
+        $categoria = $this->categoriasEmpresa()->findOrFail($id);
+
         return view('categorias.show', compact('categoria'));
     }
 
     /**
-     * Show the form for editing the specified resource.
+     * Mostrar el formulario de edición.
      */
-    public function edit(Categoria $categoria)
+    public function edit(string $id)
     {
+        $categoria = $this->categoriasEmpresa()->findOrFail($id);
+
         return view('categorias.edit', compact('categoria'));
     }
 
     /**
-     * Update the specified resource in storage.
+     * Actualizar una categoría y registrar los cambios.
      */
-    public function update(Request $request, Categoria $categoria)
+    public function update(Request $request, string $id)
     {
-          $datos = $request->validate([
+        $categoria = $this->categoriasEmpresa()->findOrFail($id);
+
+        $datos = $request->validate([
             'nombre' => 'required|string|max:100',
             'descripcion' => 'nullable|string|max:255',
         ]);
 
-        $categoria->update($datos);
+        DB::transaction(function () use ($categoria, $datos) {
+            $datosAnteriores = $this->datosAuditoria($categoria);
+
+            $categoria->update($datos);
+            $categoria->refresh();
+
+            app(AuditoriaService::class)->registrar(
+                'ACTUALIZAR',
+                $categoria,
+                $datosAnteriores,
+                $this->datosAuditoria($categoria),
+                'Se actualizaron los datos de una categoría.'
+            );
+        });
 
         return redirect()
             ->route('categorias.index')
@@ -76,11 +133,25 @@ class CategoriaController extends Controller
     }
 
     /**
-     * Remove the specified resource from storage.
+     * Eliminar una categoría y registrar sus datos anteriores.
      */
-    public function destroy(Categoria $categoria)
+    public function destroy(string $id)
     {
-        $categoria->delete();
+        $categoria = $this->categoriasEmpresa()->findOrFail($id);
+
+        DB::transaction(function () use ($categoria) {
+            $datosAnteriores = $this->datosAuditoria($categoria);
+
+            $categoria->delete();
+
+            app(AuditoriaService::class)->registrar(
+                'ELIMINAR',
+                $categoria,
+                $datosAnteriores,
+                null,
+                'Se eliminó una categoría.'
+            );
+        });
 
         return redirect()
             ->route('categorias.index')
